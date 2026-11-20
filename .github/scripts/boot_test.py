@@ -32,7 +32,7 @@ args = [
     "-machine", "q35,vmport=off,i8042=off,hpet=off",
     "-accel", "tcg,tb-size=512" if accel == "tcg" else "kvm",
     "-m", "2048",
-    "-device", "intel-hda", "-device", "hda-duplex",
+    "-audiodev", "none,id=audio0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=audio0",
     "-usb", "-device", "usb-tablet,bus=usb-bus.0", "-device", "usb-mouse,bus=usb-bus.0",
     "-device", "usb-kbd,bus=usb-bus.0",
     "-kernel", os.path.join(preset, "kernel"),
