@@ -1,3 +1,19 @@
+diff --git a/Configuration/UTMQemuConfiguration+Arguments.swift b/Configuration/UTMQemuConfiguration+Arguments.swift
+index 7e154bd..3fd9123 100644
+--- a/Configuration/UTMQemuConfiguration+Arguments.swift
++++ b/Configuration/UTMQemuConfiguration+Arguments.swift
+@@ -112,6 +112,11 @@ import Virtualization // for getting network interfaces
+ 
+     /// Special arguments should disable use of bootindex
+     private var shouldDisableBootIndex: Bool {
++        // on x86, -kernel registers the linuxboot option ROM at bootindex 0, so any drive
++        // with bootindex=0 makes QEMU fail with "The bootindex 0 has already been used"
++        if (system.architecture == .x86_64 || system.architecture == .i386) && drives.contains(where: { $0.imageType == .linuxKernel }) {
++            return true
++        }
+         // currently, we only identified this issue in PPC machines
+         guard system.architecture == .ppc || system.architecture == .ppc64 else {
+             return false
 diff --git a/Platform/UTMData.swift b/Platform/UTMData.swift
 index 2af61c5..440951b 100644
 --- a/Platform/UTMData.swift
