@@ -282,6 +282,40 @@ jobs:
           done
           exit 1
 
+      # dxmt-native（Windows 用の DirectX→Metal 変換）は非公開 API を使っていて App Store に弾かれる
+      # （ITMS-90338）。Android では使わないので、どこからもリンクされていなければアプリから外す
+      - name: App Store で弾かれる部品を外す
+        shell: bash
+        run: |
+          APP=$(find "$RUNNER_TEMP/Android.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist")
+          for name in dxmt-native; do
+            fw="$APP/Frameworks/$name.framework"
+            [ -d "$fw" ] || { echo "$name はありません"; continue; }
+            users=""
+            for bin in "$APP/$EXE" "$APP"/Frameworks/*.framework/*; do
+              [ -f "$bin" ] && [ -x "$bin" ] || continue
+              case "$bin" in "$fw"/*) continue;; esac
+              if otool -L "$bin" 2>/dev/null | grep -q "$name.framework"; then
+                users="$users $(basename "$bin")"
+              fi
+            done
+            if [ -n "$users" ]; then
+              echo "::warning::$name をリンクしているもの:$users — 弱リンクに変えて外します"
+              for u in $users; do
+                for bin in "$APP/$EXE" "$APP"/Frameworks/*.framework/"$u"; do
+                  [ -f "$bin" ] || continue
+                  otool -L "$bin" | grep -q "$name.framework" || continue
+                  path=$(otool -L "$bin" | awk "/$name.framework/ {print \$1; exit}")
+                  # LC_LOAD_DYLIB → LC_LOAD_WEAK_DYLIB に書き換える（読み込めなくても起動できる）
+                  python3 .github/scripts/weaken_dylib.py "$bin" "$path"
+                done
+              done
+            fi
+            rm -rf "$fw"
+            echo "$name を外しました"
+          done
+
       - name: TestFlight にアップロード
         shell: bash
         run: |
