@@ -16,7 +16,8 @@ from PIL import Image
 preset, minutes, accel = sys.argv[1], float(sys.argv[2]), sys.argv[3]
 cmdline = open(os.path.join(preset, "cmdline.txt")).read().strip()
 # 確認用にシリアルにもログを出す（アプリでは付けない）
-test_cmdline = cmdline + " console=ttyS0,115200 console=tty0"
+test_cmdline = cmdline + " console=ttyS0,115200 console=tty0 printk.devkmsg=on loglevel=8"
+cpu = os.environ.get("CPU") or "max"
 
 # 書き込みでアプリ用の元ファイルを汚さないようコピーを使う
 subprocess.run(["cp", os.path.join(preset, "data.qcow2"), "/tmp/data.qcow2"], check=True)
@@ -27,7 +28,7 @@ args = [
     "-nodefaults", "-vga", "none", "-display", "none",
     "-device", "e1000,netdev=net0", "-netdev", "user,id=net0",
     "-device", "VGA",
-    "-cpu", "max" if accel == "tcg" else "host",
+    "-cpu", cpu if accel == "tcg" else "host",
     "-smp", "cpus=4,sockets=1,cores=4,threads=1",
     "-machine", "q35,vmport=off,i8042=off,hpet=off",
     "-accel", "tcg,tb-size=512" if accel == "tcg" else "kvm",
