@@ -21,6 +21,8 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
+      - '.github/workflows/boot-test.yml'
+      - '.github/scripts/boot_test.py'
 
 concurrency:
   group: testflight-${{ github.ref }}

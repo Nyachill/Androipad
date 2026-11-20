@@ -1,0 +1,58 @@
+# iPhone/iPad に入れる前に、同じ Android 一式を Linux の QEMU で起動してみるテスト
+# アプリと同じ構成（q35 / -cpu max / VGA / IDE の CD とディスク / -kernel + -append）で動かし、
+# シリアルに出るカーネルと init のログ、画面の様子（黒い画面かどうか）を記録する
+name: Boot test
+
+on:
+  workflow_dispatch:
+    inputs:
+      cmdline:
+        description: 'カーネル引数（空ならアプリと同じ既定値）'
+        required: false
+        default: ''
+      minutes:
+        description: '何分動かすか'
+        required: false
+        default: '25'
+      accel:
+        description: 'tcg（アプリと同じ・遅い）または kvm（速い）'
+        required: false
+        default: 'tcg'
+
+env:
+  DEFAULT_ISO_URL: https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download
+  DEFAULT_CMDLINE: root=/dev/ram0 androidboot.selinux=permissive HWACCEL=0 SRC= DATA=sda video=1280x800
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ISO のキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: android-preset/android.iso
+          key: android-iso-${{ env.DEFAULT_ISO_URL }}
+
+      - name: 道具を入れる
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils libarchive-tools e2fsprogs python3-pil
+          qemu-system-x86_64 --version | head -1
+          if [ "${{ inputs.accel }}" = "kvm" ]; then
+            sudo chmod 666 /dev/kvm || true
+          fi
+
+      - name: 同梱する一式を作る（アプリと同じもの）
+        run: |
+          CMDLINE="${{ inputs.cmdline }}"
+          ./scripts/prepare_android.sh "$DEFAULT_ISO_URL" android-preset "${CMDLINE:-$DEFAULT_CMDLINE}" 16
+          echo "カーネル引数: $(cat android-preset/cmdline.txt)"
+
+      - name: 起動してみる
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          ACCEL: ${{ inputs.accel }}
+        run: python3 .github/scripts/boot_test.py android-preset "$MINUTES" "$ACCEL"
