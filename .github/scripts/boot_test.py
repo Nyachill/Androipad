@@ -66,7 +66,9 @@ def qmp_screendump(path):
     s.connect(qmp_path)
     f = s.makefile("rw")
     f.readline()
-    for cmd in ({"execute": "qmp_capabilities"},
+    # 画面が消灯していたら起こすため、シフトキーを押してから撮る
+    wake = {"execute": "send-key", "arguments": {"keys": [{"type": "qcode", "data": "shift"}]}}
+    for cmd in ({"execute": "qmp_capabilities"}, wake,
                 {"execute": "screendump", "arguments": {"filename": path}}):
         f.write(json.dumps(cmd) + "\n")
         f.flush()
@@ -88,6 +90,11 @@ def describe_screen(path):
     mean = sum(r + g + b for r, g, b in px) / (3 * len(px))
     # 色が多い＝グラフィカルな画面（ロゴやホーム）、少ない＝文字のコンソールか真っ黒
     kind = "真っ黒" if lit < len(px) * 0.002 else ("文字のコンソール" if colors <= 6 else "グラフィカルな画面")
+    # 縮小した画面を PNG の base64 でログに出す（ログから復元して確認する）
+    import base64, io
+    buf = io.BytesIO()
+    img.resize((256, 160)).save(buf, format="PNG", optimize=True)
+    print("[png] " + base64.b64encode(buf.getvalue()).decode(), flush=True)
     return f"{w}x{h} 明るい画素 {100 * lit / len(px):.1f}% 色数 {colors} 平均輝度 {mean:.0f} → {kind}"
 
 
@@ -113,6 +120,7 @@ while time.time() < deadline and proc.poll() is None:
     if time.time() - last_shot >= 60:
         last_shot = time.time()
         try:
+            time.sleep(2)
             r = qmp_screendump("/tmp/screen.ppm")
             if "error" in r:
                 print(f"[screen] 取得失敗: {r['error']}", flush=True)
