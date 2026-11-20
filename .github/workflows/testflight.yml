@@ -239,6 +239,10 @@ jobs:
           CODE_SIGN_STYLE_IOS = Automatic
           EOF
           cat CodeSigning.xcconfig
+          # App Group は API キーでは登録・割り当てできず「Authentication failed」になるため外す。
+          # iOS 版では GPU 描画（virgl）の共有メモリにしか使わないので、この構成では不要
+          /usr/libexec/PlistBuddy -c "Delete :com.apple.security.application-groups" Platform/iOS/iOS.entitlements
+          cat Platform/iOS/iOS.entitlements
           echo "アプリのバンドルID: ${BUNDLE_PREFIX}.UTM-SE"
 
       - name: アーカイブ
