@@ -1,0 +1,119 @@
+diff --git a/Platform/UTMData.swift b/Platform/UTMData.swift
+index 7be0d4b..7d39e5b 100644
+--- a/Platform/UTMData.swift
++++ b/Platform/UTMData.swift
+@@ -146,6 +146,11 @@ enum AlertItem: Identifiable {
+         beginObservingChanges()
+         #endif
+         listLoadFromDefaults()
++        #if WITH_QEMU_TCI && !WITH_REMOTE
++        Task { @MainActor in
++            await self.installAndroidPresetIfNeeded()
++        }
++        #endif
+     }
+     
+     // MARK: - VM listing
+@@ -1527,3 +1532,102 @@ class UTMRemoteData: UTMData {
+     }
+ }
+ #endif
++
++#if WITH_QEMU_TCI && !WITH_REMOTE
++// MARK: - Bundled Android preset
++
++extension UTMData {
++    private static let androidPresetName = "Android"
++    private static let androidPresetDefaultsKey = "AndroidPresetInstalled"
++
++    /// Creates the bundled Android-x86 VM the first time the app launches.
++    ///
++    /// The CI build places the files in `qemu/android` inside the app bundle. If they are
++    /// missing (a plain UTM SE build), this does nothing.
++    func installAndroidPresetIfNeeded() async {
++        let presetURL = Bundle.main.bundleURL.appendingPathComponent("qemu/android", isDirectory: true)
++        let isoURL = presetURL.appendingPathComponent("android.iso")
++        let kernelURL = presetURL.appendingPathComponent("kernel")
++        let initrdURL = presetURL.appendingPathComponent("initrd.img")
++        let dataURL = presetURL.appendingPathComponent("data.qcow2")
++        let cmdlineURL = presetURL.appendingPathComponent("cmdline.txt")
++        let defaults = UserDefaults.standard
++        guard fileManager.fileExists(atPath: isoURL.path) else {
++            return
++        }
++        guard !defaults.bool(forKey: Self.androidPresetDefaultsKey) else {
++            return
++        }
++        guard !virtualMachines.contains(where: { $0.config?.information.name == Self.androidPresetName }) else {
++            defaults.set(true, forKey: Self.androidPresetDefaultsKey)
++            return
++        }
++        let cmdline = (try? String(contentsOf: cmdlineURL, encoding: .utf8))?
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++            ?? "root=/dev/ram0 androidboot.selinux=permissive HWACCEL=0 SRC= DATA=sda"
++
++        let arch = QEMUArchitecture.x86_64
++        let target = QEMUTarget_x86_64.q35
++        let config = UTMQemuConfiguration()
++        config.information.name = Self.androidPresetName
++        config.system.architecture = arch
++        config.system.target = target
++        config.reset(forArchitecture: arch, target: target)
++        config.system.cpu = QEMUCPU_x86_64.max
++        config.system.cpuCount = 4
++        config.system.memorySize = 3072
++        config.qemu.hasUefiBoot = false
++        config.qemu.hasTPMDevice = false
++        config.information.iconURL = UTMConfigurationInfo.builtinIcon(named: "android")
++        if !config.displays.isEmpty {
++            config.displays[0].hardware = QEMUDisplayDevice_x86_64.VGA
++        }
++
++        var kernel = UTMQemuConfigurationDrive()
++        kernel.imageURL = kernelURL
++        kernel.imageType = .linuxKernel
++        kernel.isRawImage = true
++        config.drives.append(kernel)
++
++        var initrd = UTMQemuConfigurationDrive()
++        initrd.imageURL = initrdURL
++        initrd.imageType = .linuxInitrd
++        initrd.isRawImage = true
++        config.drives.append(initrd)
++
++        // The ISO holds system.sfs and ramdisk.img; it is copied into the VM so it
++        // survives app updates (a bookmark into the app bundle would not).
++        var cd = UTMQemuConfigurationDrive(forArchitecture: arch, target: target, isExternal: false)
++        cd.imageType = .cd
++        cd.interface = .ide
++        cd.isRawImage = true
++        cd.isReadOnly = true
++        cd.imageURL = isoURL
++        config.drives.append(cd)
++
++        // Pre-formatted ext4 image (qcow2) mounted as /data (DATA=sda). Marked raw only
++        // so it is copied as-is instead of converted; QEMU probes the qcow2 format itself.
++        var data = UTMQemuConfigurationDrive(forArchitecture: arch, target: target, isExternal: false)
++        data.imageType = .disk
++        data.interface = .ide
++        data.isRawImage = true
++        data.imageURL = dataURL
++        config.drives.append(data)
++
++        config.qemu.additionalArguments.append(QEMUArgument("-append"))
++        config.qemu.additionalArguments.append(QEMUArgument(cmdline))
++
++        busy = true
++        defer {
++            busy = false
++        }
++        do {
++            _ = try await create(config: config)
++            defaults.set(true, forKey: Self.androidPresetDefaultsKey)
++        } catch {
++            logger.error("Failed to create Android preset: \(error.localizedDescription)")
++            showErrorAlert(message: error.localizedDescription)
++        }
++    }
++}
++#endif

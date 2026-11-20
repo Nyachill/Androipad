@@ -1,0 +1,331 @@
+# UTM SE（JIT なしの QEMU）に Android-x86 を同梱したアプリをビルドして TestFlight に上げる
+# Actions タブ → TestFlight → Run workflow で実行（main に push しても実行）
+name: TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: 'Android-x86 の ISO の URL（空なら既定）'
+        required: false
+        default: ''
+      cmdline:
+        description: 'Android のカーネル引数（空なら既定）'
+        required: false
+        default: ''
+      rebuild_sysroot:
+        description: 'QEMU 一式（sysroot）を作り直す'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+
+concurrency:
+  group: testflight-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 土台にする UTM のバージョン（タグ）
+  UTM_TAG: v5.0.9-2
+  # Android-x86 9.0-r2（64bit）。最後の正式版
+  DEFAULT_ISO_URL: https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download
+  # root/SRC は ISO から起動するための指定、DATA=sda は保存用ディスク、HWACCEL=0 は GPU なし（ソフト描画）
+  DEFAULT_CMDLINE: root=/dev/ram0 androidboot.selinux=permissive HWACCEL=0 SRC= DATA=sda video=1280x800
+  # /data（アプリやデータの保存先）の容量（GB）
+  DATA_GB: '16'
+
+jobs:
+  # Secrets が揃っているかを先に Linux で確認する（足りなければ Mac を起動しない）
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HAS_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID != '' }}
+      HAS_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID != '' }}
+      HAS_ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 != '' }}
+      HAS_TEAM_ID: ${{ secrets.TEAM_ID != '' }}
+      HAS_BUNDLE_PREFIX: ${{ secrets.BUNDLE_PREFIX != '' }}
+    steps:
+      - name: Secrets の確認
+        run: |
+          missing=""
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 TEAM_ID BUNDLE_PREFIX; do
+            var="HAS_$name"
+            [ "${!var}" = "true" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets が未設定です:$missing — Settings → Secrets and variables → Actions で登録してください"
+            exit 1
+          fi
+          echo "Secrets は 5 つとも設定済みです"
+
+  # Android-x86 の ISO を落として、アプリに入れる一式を作る（Linux で）
+  android-image:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ISO_URL: ${{ inputs.iso_url || '' }}
+      CMDLINE: ${{ inputs.cmdline || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定を決める
+        run: |
+          echo "ISO_URL=${ISO_URL:-$DEFAULT_ISO_URL}" >> "$GITHUB_ENV"
+          echo "CMDLINE=${CMDLINE:-$DEFAULT_CMDLINE}" >> "$GITHUB_ENV"
+
+      - name: ISO のキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: android-preset/android.iso
+          key: android-iso-${{ inputs.iso_url || env.DEFAULT_ISO_URL }}
+
+      - name: 道具を入れる
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools qemu-utils e2fsprogs
+
+      - name: 同梱する一式を作る
+        run: ./scripts/prepare_android.sh "$ISO_URL" android-preset "$CMDLINE" "$DATA_GB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-preset
+          path: android-preset
+          retention-days: 3
+          compression-level: 0
+
+  build:
+    needs: [preflight, android-image]
+    runs-on: macos-26
+    timeout-minutes: 350
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      BUNDLE_PREFIX: ${{ secrets.BUNDLE_PREFIX }}
+      SYSROOT: sysroot-ios-tci-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Xcode のバージョン確認
+        run: |
+          xcodebuild -version
+          major=$(xcodebuild -version | awk '/^Xcode/ {print $2}' | cut -d. -f1)
+          if [ "${major:-0}" -lt 26 ]; then
+            echo "::error::Xcode ${major} では App Store Connect にアップロードできません（26 以降が必要）"
+            exit 1
+          fi
+
+      - name: UTM のソースを取得（${{ env.UTM_TAG }}）
+        run: |
+          git clone --depth 1 --branch "$UTM_TAG" https://github.com/utmapp/UTM.git utm
+          cd utm && git log -1 --oneline
+
+      - name: Android 同梱用の変更を当てる
+        working-directory: utm
+        run: |
+          for p in ../patches/*.patch; do
+            echo "適用: $p"
+            git apply --whitespace=nowarn "$p"
+          done
+          # ホーム画面での名前を「Android」にする
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Android" Platform/iOS/Info.plist \
+            || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Android" Platform/iOS/Info.plist
+
+      # QEMU などのビルド済み一式。1) 前回のキャッシュ 2) UTM 公式のリリースビルドの成果物 3) 自分でビルド の順に試す
+      - name: sysroot のキャッシュ
+        id: cache-sysroot
+        if: ${{ !inputs.rebuild_sysroot }}
+        uses: actions/cache/restore@v4
+        with:
+          path: utm/${{ env.SYSROOT }}
+          key: sysroot-${{ env.SYSROOT }}-${{ env.UTM_TAG }}
+
+      - name: UTM 公式の sysroot をダウンロード
+        id: official-sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true' && !inputs.rebuild_sysroot
+        continue-on-error: true
+        working-directory: utm
+        env:
+          GH_TOKEN: ${{ secrets.SYSROOT_TOKEN || github.token }}
+        run: |
+          run_id=$(gh run list -R utmapp/UTM --workflow build.yml --event release --limit 50 \
+                     --json databaseId,headBranch,conclusion \
+                     --jq "[.[] | select(.headBranch == \"$UTM_TAG\")][0].databaseId")
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "::warning::$UTM_TAG のリリースビルドが見つかりません"
+            exit 1
+          fi
+          echo "UTM のリリースビルド: $run_id"
+          gh run download "$run_id" -R utmapp/UTM -n "Sysroot-ios-tci-arm64" -D sysroot-dl
+          tar -xf sysroot-dl/sysroot.tgz
+          rm -rf sysroot-dl
+          test -d "$SYSROOT"
+          echo "公式の sysroot を使います"
+
+      - name: sysroot を自分でビルド（初回だけ。1〜3 時間）
+        id: build-sysroot
+        if: steps.cache-sysroot.outputs.cache-hit != 'true' && (inputs.rebuild_sysroot || steps.official-sysroot.outcome != 'success')
+        working-directory: utm
+        env:
+          NCPU: '1'
+        run: |
+          rm -rf "$SYSROOT"
+          echo "/usr/local/opt/bison/bin:/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/local/opt/bison/bin:/opt/homebrew/opt/bison/bin:$PATH"
+          brew uninstall cmake || true
+          brew install bison pkg-config gettext glib-utils libgpg-error nasm make meson cmake
+          brew install llvm spirv-llvm-translator libxcb libxrandr
+          pip3 install --break-system-packages --user six pyparsing pyyaml setuptools distlib mako
+          rm -f /usr/local/lib/pkgconfig/*.pc
+          ./scripts/build_dependencies.sh -p ios-tci -a arm64
+
+      - name: sysroot をキャッシュに保存
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: utm/${{ env.SYSROOT }}
+          key: sysroot-${{ env.SYSROOT }}-${{ env.UTM_TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-preset
+          path: android-preset
+
+      - name: Android 一式をアプリに入れる
+        run: |
+          # qemu フォルダはそのままアプリの中にコピーされる（UTMData がここから VM を作る）
+          dest="utm/$SYSROOT/share/qemu/android"
+          rm -rf "$dest"
+          mkdir -p "$dest"
+          cp android-preset/* "$dest/"
+          ls -la "$dest"
+
+      - name: API キーを配置
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$KEY_PATH"; then
+            echo "::error::ASC_KEY_P8 の中身が .p8 ファイルの形式（-----BEGIN PRIVATE KEY----- で始まる）ではありません"
+            exit 1
+          fi
+          echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: 古い開発用証明書を整理
+        continue-on-error: true
+        run: python3 .github/scripts/prune_dev_certs.py
+
+      - name: 署名の設定
+        working-directory: utm
+        run: |
+          cat > CodeSigning.xcconfig <<EOF
+          DEVELOPMENT_TEAM = ${TEAM_ID}
+          PRODUCT_BUNDLE_PREFIX = ${BUNDLE_PREFIX}
+          DEVELOPER_ACCOUNT_PAID = YES
+          DEVELOPER_ACCOUNT_VM_ACCESS = NO
+          CODE_SIGN_IDENTITY_IOS = Apple Development
+          CODE_SIGN_STYLE_IOS = Automatic
+          EOF
+          cat CodeSigning.xcconfig
+          echo "アプリのバンドルID: ${BUNDLE_PREFIX}.UTM-SE"
+
+      - name: アーカイブ
+        working-directory: utm
+        shell: bash
+        run: |
+          set -o pipefail
+          LOG="$RUNNER_TEMP/archive.log"
+          for attempt in 1 2; do
+            echo "::group::アーカイブ（${attempt} 回目）"
+            if xcodebuild archive \
+                 -project UTM.xcodeproj \
+                 -scheme iOS-SE \
+                 -configuration Release \
+                 -destination 'generic/platform=iOS' \
+                 -archivePath "$RUNNER_TEMP/Android.xcarchive" \
+                 -skipPackagePluginValidation \
+                 -allowProvisioningUpdates \
+                 -authenticationKeyPath "$KEY_PATH" \
+                 -authenticationKeyID "$ASC_KEY_ID" \
+                 -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+                 ARCHS=arm64 \
+                 CURRENT_PROJECT_VERSION="${{ github.run_number }}" 2>&1 | tee "$LOG"; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" = 1 ] && grep -qE 'Build input file cannot be found: .*\.mobileprovision' "$LOG"; then
+              echo "プロビジョニングプロファイルが間に合わなかったため、もう一度アーカイブします"
+              sleep 10
+              continue
+            fi
+            echo "::error::アーカイブに失敗しました。ログの error: の行を確認してください"
+            grep -E 'error:' "$LOG" | head -30 || true
+            exit 1
+          done
+          exit 1
+
+      - name: TestFlight にアップロード
+        shell: bash
+        run: |
+          set -o pipefail
+          /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" ExportOptions.plist
+          LOG="$RUNNER_TEMP/export.log"
+          for attempt in 1 2 3; do
+            echo "::group::アップロード（${attempt} 回目）"
+            if xcodebuild -exportArchive \
+                 -archivePath "$RUNNER_TEMP/Android.xcarchive" \
+                 -exportOptionsPlist ExportOptions.plist \
+                 -exportPath "$RUNNER_TEMP/export" \
+                 -allowProvisioningUpdates \
+                 -authenticationKeyPath "$KEY_PATH" \
+                 -authenticationKeyID "$ASC_KEY_ID" \
+                 -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee "$LOG"; then
+              echo "::endgroup::"
+              echo "アップロード成功（${attempt} 回目）"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if grep -qE 'ITMS-90186|already been used|already been uploaded' "$LOG"; then
+              echo "::notice::このビルド番号はすでにアップロード済みのため成功とみなします"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::アップロード ${attempt} 回目が失敗。30 秒後に再試行します"
+              sleep 30
+            fi
+          done
+          echo "::error::3 回試してもアップロードに失敗しました"
+          exit 1
+
+      - name: 失敗時にログを集める
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/distlogs"
+          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/distlogs/" 2>/dev/null || true
+          cp -R "$TMPDIR"/*.xcdistributionlogs "$RUNNER_TEMP/distlogs/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/export" "$RUNNER_TEMP/distlogs/" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: ${{ runner.temp }}/distlogs
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: API キーを削除
+        if: always()
+        run: rm -f "$KEY_PATH"
