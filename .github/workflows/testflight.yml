@@ -28,7 +28,8 @@ concurrency:
 
 env:
   # 土台にする UTM のバージョン（タグ）
-  UTM_TAG: v5.0.9-2
+  # v5.0.6 以降は iOS 27 SDK（Xcode 27）が必要。GitHub の Mac は Xcode 26.6 までなので v5.0.5 を使う
+  UTM_TAG: v5.0.5
   # Android-x86 9.0-r2（64bit）。最後の正式版
   DEFAULT_ISO_URL: https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download
   # root/SRC は ISO から起動するための指定、DATA=sda は保存用ディスク、HWACCEL=0 は GPU なし（ソフト描画）

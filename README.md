@@ -27,7 +27,7 @@ SNS ブロッカーと同じ Apple 側の設定を流用できます。
 Identifiers → ＋ → App IDs → App で次を登録（`jp.amgm.android` の部分は好きに決めてよい。これが `BUNDLE_PREFIX`）。
 
 - `jp.amgm.android.UTM-SE` … Capabilities で **App Groups**、**Increased Memory Limit**、**Extended Virtual Addressing** にチェック
-- `jp.amgm.android.UTM-SE.iOSHelper` … チェック不要
+- （`jp.amgm.android.UTM-SE.iOSHelper` は UTM v5.0.6 以降で使う。今の v5.0.5 では不要）
 
 末尾の `.UTM-SE` と `.UTM-SE.iOSHelper` は変えないでください（UTM 側で決まっています）。
 
