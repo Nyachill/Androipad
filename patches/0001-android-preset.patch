@@ -1,8 +1,8 @@
 diff --git a/Platform/UTMData.swift b/Platform/UTMData.swift
-index 7be0d4b..7d39e5b 100644
+index 2af61c5..440951b 100644
 --- a/Platform/UTMData.swift
 +++ b/Platform/UTMData.swift
-@@ -146,6 +146,11 @@ enum AlertItem: Identifiable {
+@@ -136,6 +136,11 @@ enum AlertItem: Identifiable {
          beginObservingChanges()
          #endif
          listLoadFromDefaults()
@@ -14,7 +14,7 @@ index 7be0d4b..7d39e5b 100644
      }
      
      // MARK: - VM listing
-@@ -1527,3 +1532,102 @@ class UTMRemoteData: UTMData {
+@@ -1474,3 +1479,105 @@ class UTMRemoteData: UTMData {
      }
  }
  #endif
@@ -61,7 +61,9 @@ index 7be0d4b..7d39e5b 100644
 +        config.reset(forArchitecture: arch, target: target)
 +        config.system.cpu = QEMUCPU_x86_64.max
 +        config.system.cpuCount = 4
-+        config.system.memorySize = 3072
++        // iPhone (8GB) has a much lower per-app memory limit than an M-series iPad
++        let physicalMB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
++        config.system.memorySize = physicalMB >= 12 * 1024 ? 3072 : 2048
 +        config.qemu.hasUefiBoot = false
 +        config.qemu.hasTPMDevice = false
 +        config.information.iconURL = UTMConfigurationInfo.builtinIcon(named: "android")
@@ -101,7 +103,8 @@ index 7be0d4b..7d39e5b 100644
 +        config.drives.append(data)
 +
 +        config.qemu.additionalArguments.append(QEMUArgument("-append"))
-+        config.qemu.additionalArguments.append(QEMUArgument(cmdline))
++        // UTM splits user arguments on whitespace unless quoted
++        config.qemu.additionalArguments.append(QEMUArgument("\"\(cmdline)\""))
 +
 +        busy = true
 +        defer {
