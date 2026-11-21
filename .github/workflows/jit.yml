@@ -1,0 +1,140 @@
+# JIT 版：UTM（SE ではない通常版）に Android-x86 を同梱した、署名なしの IPA を作る
+# Sideloadly などで自分の Apple ID で署名して入れ、StikDebug から起動すると JIT で動く（iOS 26）
+# できた IPA は GitHub の Releases に置く
+name: JIT IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: 'Android-x86 の ISO の URL（空なら 9.0-r2）'
+        required: false
+        default: ''
+      cmdline:
+        description: 'Android のカーネル引数（空なら軽量設定）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  UTM_TAG: v5.0.5
+  DEFAULT_ISO_URL: https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download
+  # 初期設定画面を省き、画面を小さくして描画の負担を減らす（起動テストで効果を確認済み）
+  DEFAULT_CMDLINE: root=/dev/ram0 androidboot.selinux=permissive HWACCEL=0 SETUPWIZARD=0 SRC= DATA=sda video=800x480
+  DATA_GB: '16'
+
+jobs:
+  android-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: 設定を決める
+        run: |
+          ISO_URL="${{ inputs.iso_url }}"; CMDLINE="${{ inputs.cmdline }}"
+          echo "ISO_URL=${ISO_URL:-$DEFAULT_ISO_URL}" >> "$GITHUB_ENV"
+          echo "CMDLINE=${CMDLINE:-$DEFAULT_CMDLINE}" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: android-preset/android.iso
+          key: android-iso-${{ inputs.iso_url || env.DEFAULT_ISO_URL }}
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libarchive-tools qemu-utils e2fsprogs
+      - run: ./scripts/prepare_android.sh "$ISO_URL" android-preset "$CMDLINE" "$DATA_GB"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-preset-jit
+          path: android-preset
+          retention-days: 3
+          compression-level: 0
+
+  build:
+    needs: android-image
+    runs-on: macos-26
+    timeout-minutes: 350
+    env:
+      SYSROOT: sysroot-ios-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: UTM のソースを取得（${{ env.UTM_TAG }}）
+        run: git clone --depth 1 --branch "$UTM_TAG" https://github.com/utmapp/UTM.git utm
+
+      - name: Android 同梱用の変更を当てる
+        working-directory: utm
+        run: |
+          for p in ../patches/*.patch; do git apply --whitespace=nowarn "$p"; done
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Android JIT" Platform/iOS/Info.plist \
+            || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Android JIT" Platform/iOS/Info.plist
+
+      - name: sysroot のキャッシュ
+        id: cache-sysroot
+        uses: actions/cache/restore@v4
+        with:
+          path: utm/${{ env.SYSROOT }}
+          key: sysroot-${{ env.SYSROOT }}-${{ env.UTM_TAG }}
+
+      - name: UTM 公式の sysroot をダウンロード
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        working-directory: utm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R utmapp/UTM --workflow build.yml --event release --limit 50 \
+                     --json databaseId,headBranch --jq "[.[] | select(.headBranch == \"$UTM_TAG\")][0].databaseId")
+          echo "UTM のリリースビルド: $run_id"
+          gh run download "$run_id" -R utmapp/UTM -n "Sysroot-ios-arm64" -D sysroot-dl
+          tar -xf sysroot-dl/sysroot.tgz
+          rm -rf sysroot-dl
+          test -d "$SYSROOT"
+
+      - name: sysroot をキャッシュに保存
+        if: steps.cache-sysroot.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: utm/${{ env.SYSROOT }}
+          key: sysroot-${{ env.SYSROOT }}-${{ env.UTM_TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-preset-jit
+          path: android-preset
+
+      - name: Android 一式をアプリに入れる
+        run: |
+          dest="utm/$SYSROOT/share/qemu/android"
+          rm -rf "$dest" && mkdir -p "$dest"
+          cp android-preset/* "$dest/"
+          ls -la "$dest"
+
+      - name: ビルド（署名なし）
+        working-directory: utm
+        run: |
+          brew install ldid
+          ./scripts/build_utm.sh -k iphoneos -s iOS -a arm64 -o "$RUNNER_TEMP/UTM"
+
+      - name: IPA にまとめる
+        working-directory: utm
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          ./scripts/package.sh ipa "$RUNNER_TEMP/UTM.xcarchive" "$RUNNER_TEMP/out"
+          mv "$RUNNER_TEMP/out/UTM.ipa" "$RUNNER_TEMP/out/AndroidJIT.ipa"
+          ls -la "$RUNNER_TEMP/out"
+
+      - name: Releases に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="jit-${{ github.run_number }}"
+          gh release create "$tag" "$RUNNER_TEMP/out/AndroidJIT.ipa" -R "$GITHUB_REPOSITORY" \
+            --title "Android JIT（ビルド ${{ github.run_number }}）" \
+            --notes "UTM ${UTM_TAG} + Android-x86（署名なし IPA）。Sideloadly などで自分の Apple ID で署名して入れ、StikDebug から起動すると JIT で動きます。"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
