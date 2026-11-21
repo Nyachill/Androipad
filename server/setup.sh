@@ -99,13 +99,13 @@ echo "使うイメージ: $IMAGE"
 if [ -n "${STOP_BEFORE_RUN:-}" ]; then echo "STOP_BEFORE_RUN が指定されたのでここで終了（テスト用）"; exit 0; fi
 
 step "5/8 Android を起動"
-# 安全装置: 10 分以内にこのスクリプトが最後まで行かなかったら（サーバーが固まった・通信が切れた場合）、
+# 安全装置: 10 分以内に Android の起動確認まで行かなかったら（サーバーが固まった・通信が切れた場合）、
 # Android を止めて自動起動を切り、それでもネットにつながらなければサーバーを再起動する
 rm -f "$APP_DIR/confirmed"
 systemctl stop androidpad-deadman.timer 2>/dev/null || true
 systemd-run --unit=androidpad-deadman --on-active=10min --timer-property=AccuracySec=10s \
   /bin/sh -c "test -f $APP_DIR/confirmed || { docker update --restart=no $CONTAINER; docker stop -t 5 $CONTAINER; sleep 10; ping -c1 -W5 1.1.1.1 >/dev/null 2>&1 || systemctl reboot; }" >/dev/null
-echo "安全装置を設定しました（10 分以内に完了しなければ Android を自動で止めます）"
+echo "安全装置を設定しました（10 分以内に起動を確認できなければ Android を自動で止めます）"
 if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   # adb は 127.0.0.1 にだけ公開（外から直接つながらない）
   # ARM 専用アプリ（zeta など）は libndk_translation で動かす
