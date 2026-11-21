@@ -24,14 +24,14 @@ subprocess.run(["cp", os.path.join(preset, "data.qcow2"), "/tmp/data.qcow2"], ch
 
 qmp_path = "/tmp/qmp.sock"
 args = [
-    "qemu-system-x86_64",
+    os.environ.get("QEMU_BIN") or "qemu-system-x86_64",
     "-nodefaults", "-vga", "none", "-display", "none",
     "-device", "e1000,netdev=net0", "-netdev", "user,id=net0",
     "-device", "VGA",
-    "-cpu", cpu if accel == "tcg" else "host",
+    "-cpu", cpu if accel != "kvm" else "host",
     "-smp", "cpus=4,sockets=1,cores=4,threads=1",
     "-machine", "q35,vmport=off,i8042=off,hpet=off",
-    "-accel", "tcg,tb-size=512" if accel == "tcg" else "kvm",
+    "-accel", "tcg,tb-size=512" if accel != "kvm" else "kvm",
     "-m", "2048",
     "-audiodev", "none,id=audio0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=audio0",
     "-usb", "-device", "usb-tablet,bus=usb-bus.0", "-device", "usb-mouse,bus=usb-bus.0",
