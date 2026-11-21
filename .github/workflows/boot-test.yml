@@ -57,7 +57,7 @@ jobs:
           git clone --depth 1 --branch v10.0.3 https://github.com/qemu/qemu.git /tmp/qemu-src
           cd /tmp/qemu-src
           ./configure --target-list=x86_64-softmmu --enable-tcg-interpreter --enable-slirp \
-            --disable-docs --disable-werror --disable-gtk --disable-sdl --disable-vnc --disable-opengl
+            --disable-docs --disable-werror --disable-fdt --disable-gtk --disable-sdl --disable-vnc --disable-opengl
           ninja -C build qemu-system-x86_64
           echo "QEMU_BIN=/tmp/qemu-src/build/qemu-system-x86_64" >> "$GITHUB_ENV"
           /tmp/qemu-src/build/qemu-system-x86_64 --version | head -1
