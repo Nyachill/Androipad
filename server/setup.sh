@@ -60,8 +60,10 @@ fi
 step "2/8 必要なパッケージ"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq "linux-modules-extra-$(uname -r)" docker.io adb lzip git curl python3 python3-venv \
+apt-get install -y -qq "linux-modules-extra-$(uname -r)" adb lzip git curl python3 python3-venv \
   nginx certbot python3-certbot-nginx apache2-utils build-essential >/dev/null
+# Docker は入っていなければ入れる（docker-ce が入っている場合はそのまま使う）
+command -v docker >/dev/null || apt-get install -y -qq docker.io >/dev/null
 systemctl enable --now docker >/dev/null
 
 step "3/8 Android 用のカーネル機能（binder）"
@@ -184,17 +186,27 @@ systemctl restart androidpad-scrcpy
 
 step "7/8 nginx（パスワード付き HTTPS）"
 PASS_FILE=/etc/nginx/androidpad.htpasswd
+TOKEN_FILE=/etc/nginx/androidpad.token
 NEW_PASSWORD=""
-if [ ! -f "$PASS_FILE" ]; then
-  NEW_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+if [ ! -s "$TOKEN_FILE" ]; then
+  NEW_PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20 || true)
+  printf '%s' "$NEW_PASSWORD" > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
   htpasswd -bc "$PASS_FILE" android "$NEW_PASSWORD" >/dev/null
 fi
+TOKEN=$(cat "$TOKEN_FILE")
 cat > /etc/nginx/sites-available/androidpad <<EOF
+# アプリはクッキー（androidpad_token）で、ブラウザは Basic 認証で入れる
+map \$cookie_androidpad_token \$androidpad_auth {
+    "$TOKEN" off;
+    default  "Androidpad";
+}
+
 server {
     listen 80;
     server_name $DOMAIN;
 
-    auth_basic "Androidpad";
+    auth_basic \$androidpad_auth;
     auth_basic_user_file $PASS_FILE;
 
     location / {
@@ -224,7 +236,7 @@ echo "ユーザー名: android"
 if [ -n "$NEW_PASSWORD" ]; then
   echo "パスワード: $NEW_PASSWORD   ← アプリに入れるので控えてください（ここでしか表示されません）"
 else
-  echo "パスワード: 前回表示したもの（変えるには: sudo htpasswd /etc/nginx/androidpad.htpasswd android）"
+  echo "パスワード: 前回表示したもの（確認するには: sudo cat /etc/nginx/androidpad.token）"
 fi
 echo "Android の状態: $(docker ps --filter name=$CONTAINER --format '{{.Status}}')"
 echo "メモリ: $(free -h | awk '/Mem/ {print $3 " 使用 / " $2}')"

@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: setup.sh を実行
-        run: sudo SKIP_CERT=1 bash server/setup.sh android.test test@example.com 2>&1 | tee /tmp/setup.log
+        run: set -o pipefail; sudo SKIP_CERT=1 bash server/setup.sh android.test test@example.com 2>&1 | tee /tmp/setup.log
       - name: 動作確認
         run: |
           set -x
