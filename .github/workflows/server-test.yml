@@ -1,0 +1,38 @@
+# server/setup.sh を GitHub の Ubuntu 22.04 で試す（証明書の取得以外を全部実行）
+name: Server test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-test.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup.sh を実行
+        run: sudo SKIP_CERT=1 bash server/setup.sh android.test test@example.com 2>&1 | tee /tmp/setup.log
+      - name: 動作確認
+        run: |
+          set -x
+          docker ps
+          adb devices
+          adb -s 127.0.0.1:5555 shell getprop sys.boot_completed
+          adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abilist
+          adb -s 127.0.0.1:5555 shell pm list packages | grep -E 'vending|gms' || echo "Google Play が見つからない"
+          systemctl status androidpad-scrcpy --no-pager | head -15
+          PASS=$(grep -o 'パスワード: [A-Za-z0-9]*' /tmp/setup.log | awk '{print $2}')
+          echo "認証なし: $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: android.test' http://127.0.0.1/)"
+          echo "認証あり: $(curl -s -o /dev/null -w '%{http_code}' -u "android:$PASS" -H 'Host: android.test' http://127.0.0.1/)"
+          curl -s -u "android:$PASS" -H 'Host: android.test' http://127.0.0.1/ | head -c 300; echo
+          adb -s 127.0.0.1:5555 exec-out screencap -p > /tmp/screen.png
+          python3 -c "
+          from PIL import Image; import base64, io
+          im=Image.open('/tmp/screen.png').convert('RGB'); print('画面', im.size)
+          b=io.BytesIO(); im.resize((180,320)).save(b,'PNG'); print('[png]', base64.b64encode(b.getvalue()).decode())
+          " || true
