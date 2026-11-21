@@ -6,6 +6,10 @@ name: Boot test
 on:
   workflow_dispatch:
     inputs:
+      iso_url:
+        description: 'ISO の URL（空なら Android 9）'
+        required: false
+        default: ''
       cmdline:
         description: 'カーネル引数（空ならアプリと同じ既定値）'
         required: false
@@ -38,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android-preset/android.iso
-          key: android-iso-${{ env.DEFAULT_ISO_URL }}
+          key: android-iso-${{ inputs.iso_url || env.DEFAULT_ISO_URL }}
 
       - name: 道具を入れる
         run: |
@@ -65,7 +69,8 @@ jobs:
       - name: 同梱する一式を作る（アプリと同じもの）
         run: |
           CMDLINE="${{ inputs.cmdline }}"
-          ./scripts/prepare_android.sh "$DEFAULT_ISO_URL" android-preset "${CMDLINE:-$DEFAULT_CMDLINE}" 16
+          ISO_URL="${{ inputs.iso_url }}"
+          ./scripts/prepare_android.sh "${ISO_URL:-$DEFAULT_ISO_URL}" android-preset "${CMDLINE:-$DEFAULT_CMDLINE}" 16
           echo "カーネル引数: $(cat android-preset/cmdline.txt)"
 
       - name: 起動してみる
