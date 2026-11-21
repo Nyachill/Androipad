@@ -96,6 +96,8 @@ IMAGE=$(find_image || true)
 [ -n "$IMAGE" ] || { echo "Google Play 入りのイメージができていません。上のログを送ってください"; docker images; exit 1; }
 echo "使うイメージ: $IMAGE"
 
+if [ -n "${STOP_BEFORE_RUN:-}" ]; then echo "STOP_BEFORE_RUN が指定されたのでここで終了（テスト用）"; exit 0; fi
+
 step "5/8 Android を起動"
 if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   # adb は 127.0.0.1 にだけ公開（外から直接つながらない）

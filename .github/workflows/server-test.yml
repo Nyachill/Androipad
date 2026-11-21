@@ -3,33 +3,48 @@ name: Server test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'server/**'
-      - '.github/workflows/server-test.yml'
 
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
-      - name: setup.sh を実行
-        run: set -o pipefail; sudo SKIP_CERT=1 bash server/setup.sh android.test test@example.com 2>&1 | tee /tmp/setup.log
-      - name: 動作確認
+      - name: 前半（パッケージ・binder・イメージ作成）
+        run: set -o pipefail; sudo STOP_BEFORE_RUN=1 SKIP_CERT=1 bash server/setup.sh android.test test@example.com 2>&1 | tee /tmp/setup1.log
+      - name: イメージとカーネルの確認
         run: |
-          set -x
-          docker ps
+          docker images
+          uname -r; lsmod | grep binder || true
+          grep binder /proc/filesystems || true
+      - name: Android を起動してみる（5 分）
+        timeout-minutes: 10
+        run: |
+          set +e
+          sudo SKIP_CERT=1 timeout 600 bash server/setup.sh android.test test@example.com > /tmp/setup2.log 2>&1 &
+          for i in $(seq 1 20); do
+            sleep 15
+            echo "--- ${i}: $(docker ps --format '{{.Names}} {{.Status}}')"
+            sudo dmesg | tail -5
+            adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>&1 | head -1
+            grep "=== " /tmp/setup2.log | tail -1
+          done
+          docker logs androidpad 2>&1 | tail -30
+      - name: 後半のログ
+        if: always()
+        run: cat /tmp/setup2.log | tail -60
+      - name: 動作確認
+        if: always()
+        run: |
           adb devices
-          adb -s 127.0.0.1:5555 shell getprop sys.boot_completed
           adb -s 127.0.0.1:5555 shell getprop ro.product.cpu.abilist
           adb -s 127.0.0.1:5555 shell pm list packages | grep -E 'vending|gms' || echo "Google Play が見つからない"
-          systemctl status androidpad-scrcpy --no-pager | head -15
-          PASS=$(grep -o 'パスワード: [A-Za-z0-9]*' /tmp/setup.log | awk '{print $2}')
+          systemctl status androidpad-scrcpy --no-pager | head -10
+          PASS=$(sudo cat /etc/nginx/androidpad.token)
           echo "認証なし: $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: android.test' http://127.0.0.1/)"
-          echo "認証あり: $(curl -s -o /dev/null -w '%{http_code}' -u "android:$PASS" -H 'Host: android.test' http://127.0.0.1/)"
-          curl -s -u "android:$PASS" -H 'Host: android.test' http://127.0.0.1/ | head -c 300; echo
+          echo "Basic認証: $(curl -s -o /dev/null -w '%{http_code}' -u "android:$PASS" -H 'Host: android.test' http://127.0.0.1/)"
+          echo "クッキー: $(curl -s -o /dev/null -w '%{http_code}' -b "androidpad_token=$PASS" -H 'Host: android.test' http://127.0.0.1/)"
+          echo "外から18000: $(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://$(hostname -I | awk '{print $1}'):18000/ || true)"
           adb -s 127.0.0.1:5555 exec-out screencap -p > /tmp/screen.png
           python3 -c "
           from PIL import Image; import base64, io
