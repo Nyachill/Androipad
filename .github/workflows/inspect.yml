@@ -1,0 +1,33 @@
+# Android-x86 の ISO の中身（init.sh など）を調べる
+name: Inspect ISO
+
+on:
+  workflow_dispatch:
+
+env:
+  DEFAULT_ISO_URL: https://sourceforge.net/projects/android-x86/files/Release%209.0/android-x86_64-9.0-r2.iso/download
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: android-preset/android.iso
+          key: android-iso-${{ env.DEFAULT_ISO_URL }}
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libarchive-tools squashfs-tools e2fsprogs
+          mkdir -p x && cd x
+          bsdtar -xf ../android-preset/android.iso
+          ls -la
+          echo "== isolinux.cfg"; cat isolinux/isolinux.cfg 2>/dev/null | head -40
+          unsquashfs -q -d sfs system.sfs
+          ls -la sfs
+          IMG=sfs/system.img
+          for f in /system/etc/init.sh /etc/init.sh /system/build.prop /build.prop; do
+            debugfs -R "stat $f" $IMG >/dev/null 2>&1 && { echo "== $f"; debugfs -R "cat $f" $IMG 2>/dev/null > /tmp/$(basename $f).txt; }
+          done
+          echo "== init.sh: cmdline の扱い"; grep -nE 'cmdline|setprop|nobootanim|SETUPWIZARD|bootanim|HWACCEL|watchdog' /tmp/init.sh.txt | head -80
+          echo "== build.prop（関係しそうな行）"; grep -nE 'bootanim|setupwizard|ro.config|dalvik|lmk|heapsize|watchdog' /tmp/build.prop.txt | head -40
