@@ -1,6 +1,6 @@
 # UTM SE（JIT なしの QEMU）に Android-x86 を同梱したアプリをビルドして TestFlight に上げる
 # Actions タブ → TestFlight → Run workflow で実行（main に push しても実行）
-name: TestFlight
+name: TestFlight (UTM, old)
 
 on:
   workflow_dispatch:
@@ -17,12 +17,6 @@ on:
         description: 'QEMU 一式（sysroot）を作り直す'
         type: boolean
         default: false
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - '.github/workflows/boot-test.yml'
-      - '.github/scripts/boot_test.py'
 
 concurrency:
   group: testflight-${{ github.ref }}

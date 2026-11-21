@@ -1,0 +1,94 @@
+# Android ビューア（サーバーの Android の画面を映すアプリ）をビルドして TestFlight に上げる
+# viewer/ を変更して main に push するか、Actions → Viewer TestFlight → Run workflow で実行
+name: Viewer TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'viewer/**'
+      - '.github/workflows/viewer.yml'
+
+concurrency:
+  group: viewer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      # TestFlight の「Androipad」をそのまま使う
+      VIEWER_BUNDLE_ID: ${{ secrets.BUNDLE_PREFIX }}.UTM-SE
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: プロジェクトを生成（XcodeGen）
+        working-directory: viewer
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: API キーを配置
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: 古い開発用証明書を整理
+        continue-on-error: true
+        run: python3 .github/scripts/prune_dev_certs.py
+
+      - name: アーカイブ
+        working-directory: viewer
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project AndroidViewer.xcodeproj \
+            -scheme AndroidViewer \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/AndroidViewer.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            VIEWER_BUNDLE_ID="$VIEWER_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" 2>&1 | tee "$RUNNER_TEMP/archive.log" \
+            || { grep -E 'error:' "$RUNNER_TEMP/archive.log" | head -30; exit 1; }
+
+      - name: TestFlight にアップロード
+        run: |
+          set -o pipefail
+          /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" ExportOptions.plist
+          for attempt in 1 2 3; do
+            if xcodebuild -exportArchive \
+                 -archivePath "$RUNNER_TEMP/AndroidViewer.xcarchive" \
+                 -exportOptionsPlist ExportOptions.plist \
+                 -exportPath "$RUNNER_TEMP/export" \
+                 -allowProvisioningUpdates \
+                 -authenticationKeyPath "$KEY_PATH" \
+                 -authenticationKeyID "$ASC_KEY_ID" \
+                 -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/export.log"; then
+              echo "アップロード成功"; exit 0
+            fi
+            grep -qE 'ITMS-90186|already been used|already been uploaded' "$RUNNER_TEMP/export.log" && exit 0
+            sleep 30
+          done
+          exit 1
+
+      - name: API キーを削除
+        if: always()
+        run: rm -f "$KEY_PATH"
