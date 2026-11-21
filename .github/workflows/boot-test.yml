@@ -61,3 +61,28 @@ jobs:
           ACCEL: ${{ inputs.accel }}
           CPU: ${{ inputs.cpu }}
         run: python3 .github/scripts/boot_test.py android-preset "$MINUTES" "$ACCEL"
+
+      # 再起動の原因を調べるため、Android が /data に残したクラッシュ記録を読む
+      - name: /data のクラッシュ記録を見る
+        if: always()
+        run: |
+          set +e
+          sudo modprobe nbd max_part=8
+          sudo qemu-nbd --connect=/dev/nbd0 /tmp/data.qcow2
+          sleep 2
+          sudo mkdir -p /mnt/d && sudo mount -o ro /dev/nbd0 /mnt/d
+          echo "== /data の中身"; sudo ls -la /mnt/d
+          echo "== dropbox"; sudo ls -la /mnt/d/system/dropbox 2>/dev/null | tail -40
+          for f in $(sudo ls /mnt/d/system/dropbox 2>/dev/null | grep -E 'crash|tombstone|anr|watchdog|wtf|boot|kernel|native' | head -15); do
+            echo "==== $f"
+            p="/mnt/d/system/dropbox/$f"
+            case "$f" in *.gz) sudo zcat "$p" | head -60;; *) sudo head -60 "$p";; esac
+          done
+          echo "== tombstones"; sudo ls -la /mnt/d/tombstones 2>/dev/null
+          for f in $(sudo ls /mnt/d/tombstones 2>/dev/null | head -3); do echo "==== $f"; sudo head -40 "/mnt/d/tombstones/$f"; done
+          echo "== anr"; sudo ls -la /mnt/d/anr 2>/dev/null
+          echo "== bootstat / last reboot"; sudo cat /mnt/d/misc/bootstat/* 2>/dev/null | head; sudo ls /mnt/d/misc/bootstat 2>/dev/null
+          echo "== initrd の init スクリプト（printk / DEBUG まわり）"
+          mkdir -p /tmp/initrd && cd /tmp/initrd && (zcat "$GITHUB_WORKSPACE/android-preset/initrd.img" 2>/dev/null || cat "$GITHUB_WORKSPACE/android-preset/initrd.img") | cpio -idm 2>/dev/null
+          grep -nE 'printk|DEBUG|reboot|console' /tmp/initrd/init | head -40
+          sudo umount /mnt/d; sudo qemu-nbd --disconnect /dev/nbd0
