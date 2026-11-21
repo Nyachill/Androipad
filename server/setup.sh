@@ -120,12 +120,20 @@ if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
     ro.dalvik.vm.isa.arm=x86 ro.dalvik.vm.isa.arm64=x86_64 \
     ro.enable.native.bridge.exec=1 ro.dalvik.vm.native.bridge=libndk_translation.so \
     ro.ndk_translation.version=0.2.2 >/dev/null
+else
+  docker update --restart unless-stopped "$CONTAINER" >/dev/null
+  docker start "$CONTAINER" >/dev/null
 fi
-echo "起動を待っています（初回は数分）..."
+echo "起動を待っています（初回は数分。最大 5 分）..."
 for i in $(seq 1 60); do
   adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
   if [ "$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then
-    echo "Android が起動しました"; break
+    echo "Android が起動しました"
+    # サーバーが固まらずに起動まで行けたので、安全装置を解除する
+    touch "$APP_DIR/confirmed"
+    systemctl stop androidpad-deadman.timer 2>/dev/null || true
+    echo "安全装置を解除しました"
+    break
   fi
   sleep 5
 done
@@ -242,9 +250,6 @@ elif [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
 fi
 
 step "8/8 完了"
-touch "$APP_DIR/confirmed"
-systemctl stop androidpad-deadman.timer 2>/dev/null || true
-echo "安全装置を解除しました"
 echo "URL:        https://$DOMAIN/"
 echo "ユーザー名: android"
 if [ -n "$NEW_PASSWORD" ]; then
