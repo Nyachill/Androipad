@@ -15,14 +15,14 @@ index 7e154bd..3fd9123 100644
          guard system.architecture == .ppc || system.architecture == .ppc64 else {
              return false
 diff --git a/Platform/UTMData.swift b/Platform/UTMData.swift
-index 2af61c5..440951b 100644
+index 2af61c5..19c5a03 100644
 --- a/Platform/UTMData.swift
 +++ b/Platform/UTMData.swift
 @@ -136,6 +136,11 @@ enum AlertItem: Identifiable {
          beginObservingChanges()
          #endif
          listLoadFromDefaults()
-+        #if WITH_QEMU_TCI && !WITH_REMOTE
++        #if os(iOS) && !WITH_REMOTE
 +        Task { @MainActor in
 +            await self.installAndroidPresetIfNeeded()
 +        }
@@ -35,7 +35,7 @@ index 2af61c5..440951b 100644
  }
  #endif
 +
-+#if WITH_QEMU_TCI && !WITH_REMOTE
++#if os(iOS) && !WITH_REMOTE
 +// MARK: - Bundled Android preset
 +
 +extension UTMData {
