@@ -74,7 +74,9 @@ cat > /etc/modprobe.d/androidpad.conf <<'EOF'
 options binder_linux devices="binder,hwbinder,vndbinder"
 EOF
 modprobe binder_linux devices="binder,hwbinder,vndbinder"
-ls -l /dev/binder /dev/hwbinder /dev/vndbinder
+# 新しいカーネルでは /dev/binder は作られず binderfs 経由になる（redroid がコンテナ内でマウントする）
+lsmod | grep -q '^binder_linux' && echo "binder_linux: 読み込み済み" || { echo "binder_linux を読み込めませんでした"; exit 1; }
+grep -q binder /proc/filesystems && echo "binderfs: 対応" || echo "binderfs: なし（/dev/binder を使う）"
 
 step "4/8 Android のイメージ（Google Play 入り）"
 mkdir -p "$APP_DIR" "$DATA_DIR"
